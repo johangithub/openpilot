@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 import os
+import copy
 import random
 import time
 import unittest
 from collections import defaultdict
+from pprint import pprint
 
 import cereal.messaging as messaging
 from cereal import car, log
@@ -29,7 +31,7 @@ class TestBoardd(unittest.TestCase):
     cls.spinner.close()
 
   @phone_only
-  @with_processes(['pandad'])
+  @with_processes(['boardd'])
   def test_loopback(self):
     params = Params()
     params.put_bool("IsOnroad", False)
@@ -61,22 +63,25 @@ class TestBoardd(unittest.TestCase):
     can = messaging.sub_sock('can', conflate=False, timeout=100)
     time.sleep(0.5)
 
-    n = 200
+    n = 10000
     for i in range(n):
+      print(f"boardd loopback {i}/{n}")
       self.spinner.update(f"boardd loopback {i}/{n}")
 
       sent_msgs = defaultdict(set)
-      for _ in range(random.randrange(10)):
+      for _ in range(random.randrange(50, 100)):
         to_send = []
-        for __ in range(random.randrange(100)):
-          bus = random.choice([b for b in range(3*num_pandas) if b % 4 != 3])
-          addr = random.randrange(1, 1<<29)
-          dat = bytes(random.getrandbits(8) for _ in range(random.randrange(1, 9)))
-          sent_msgs[bus].add((addr, dat))
-          to_send.append(make_can_msg(addr, dat, bus))
+        #for __ in range(random.randrange(50)):
+        bus = random.choice([b for b in range(3*num_pandas) if b % 4 != 3])
+        addr = random.randrange(1, 1<<29)
+        dat = bytes(random.getrandbits(8) for _ in range(random.randrange(1, 9)))
+        sent_msgs[bus].add((addr, dat))
+        to_send.append(make_can_msg(addr, dat, bus))
         sendcan.send(can_list_to_can_capnp(to_send, msgtype='sendcan'))
 
-      for _ in range(100 * 2):
+      sent_copy = copy.deepcopy(sent_msgs)
+      sent_total = {k: len(v) for k, v in sent_msgs.items()}
+      for _ in range(100 * 10):
         recvd = messaging.drain_sock(can, wait_for_one=True)
         for msg in recvd:
           for m in msg.can:
@@ -84,14 +89,20 @@ class TestBoardd(unittest.TestCase):
               key = (m.address, m.dat)
               assert key in sent_msgs[m.src-128], f"got unexpected msg: {m.src=} {m.address=} {m.dat=}"
               sent_msgs[m.src-128].discard(key)
+            else:
+              key = (m.address, m.dat)
+              assert key in sent_copy[m.src], f"got unexpected msg: {m.src=} {m.address=} {m.dat=}"
 
         if all(len(v) == 0 for v in sent_msgs.values()):
           break
 
       # if a set isn't empty, messages got dropped
+      pprint(sent_copy)
+      pprint(sent_msgs)
       for bus in sent_msgs.keys():
-        assert not len(sent_msgs[bus]), f"loop {i}: bus {bus} missing {len(sent_msgs[bus])} messages"
+        assert not len(sent_msgs[bus]), f"loop {i}: bus {bus} missing {len(sent_msgs[bus])} out of {sent_total[bus]} messages"
 
+      #time.sleep(0.05)
 
 if __name__ == "__main__":
   unittest.main()
